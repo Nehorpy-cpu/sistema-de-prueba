@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Pedidos | Control de Stock y Vendedores</title>
+    <!-- Carga de Tailwind CSS para el diseño -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6; /* Gris claro de fondo */
+        }
+        .container-app {
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            padding: 1rem;
+        }
+        .card {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            border-radius: 0.75rem;
+        }
+        /* Estilo para inputs de radio */
+        input[type="radio"].form-radio {
+            appearance: none;
+            border-radius: 50%;
+            border: 2px solid #D1D5DB; /* gray-300 */
+            width: 1rem;
+            height: 1rem;
+            outline: none;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        input[type="radio"].form-radio:checked {
+            border-color: #10B981; /* green-500 */
+            background-color: #10B981;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="app" class="container-app w-full">
+        <!-- Contenido principal de la aplicación se renderizará aquí -->
+    </div>
+
+    <script>
+        // --- CONFIGURACIÓN DE LA APLICACIÓN Y VARIABLES GLOBALES ---
+        const WHATSAPP_BUSINESS_NUMBER = "5491123456789"; // Reemplaza con tu número de WhatsApp Business (formato internacional sin +, ej: 54911...)
+        const APP_CONTAINER = document.getElementById('app');
+        
+        // Estado inicial
+        let state = {
+            userRole: 'vendedor', // 'vendedor' o 'admin'
+            products: JSON.parse(localStorage.getItem('products')) || [
+                // Precios ajustados a valores típicos en Guaraníes
+                { id: 1, name: "Tornillos de Anclaje", price: 35000, stock: 150, description: "Tornillos de alta resistencia, caja de 100 unidades.", image: "https://placehold.co/100x100/1e40af/ffffff?text=Tornillo" },
+                { id: 2, name: "Lijas Grano 80", price: 15000, stock: 85, description: "Paquete de 10 lijas de papel para madera.", image: "https://placehold.co/100x100/059669/ffffff?text=Lija" },
+                { id: 3, name: "Pintura Acrílica Blanca", price: 290000, stock: 40, description: "Galón de 1 litro, secado rápido.", image: "https://placehold.co/100x100/9d174d/ffffff?text=Pintura" },
+            ],
+            cart: JSON.parse(localStorage.getItem('cart')) || {}, // {productId: quantity}
+            message: { text: '', type: '', visible: false },
+            editProduct: null, // Producto que se está editando en el Admin Panel
+            vendedores: JSON.parse(localStorage.getItem('vendedores')) || ['Vendedor A', 'Vendedor B', 'Vendedor C'],
+            currentVendedor: localStorage.getItem('currentVendedor') || 'Vendedor A',
+            orderHistory: JSON.parse(localStorage.getItem('orderHistory')) || [], // Nuevo: Historial de pedidos
+        };
+
+        // --- FUNCIONES DE PERSISTENCIA Y UTILIDAD ---
+
+        function saveState() {
+            localStorage.setItem('products', JSON.stringify(state.products));
+            localStorage.setItem('cart', JSON.stringify(state.cart));
+            localStorage.setItem('currentVendedor', state.currentVendedor);
+            localStorage.setItem('vendedores', JSON.stringify(state.vendedores));
+            localStorage.setItem('orderHistory', JSON.stringify(state.orderHistory)); // Guardar historial
+        }
+        
+        // Función para formatear a Guaraní (Gs. con separador de miles)
+        function formatGuarani(amount) {
+            // Se utiliza Math.round para evitar decimales en PYG (Guaraní), y toLocaleString para separador de miles.
+            return `Gs. ${Math.round(amount).toLocaleString('es-ES')}`;
+        }
+
+
+        function dispatch(action, payload) {
+            switch (action) {
+                case 'SET_ROLE':
+                    state.userRole = payload;
+                    break;
+                case 'ADD_TO_CART':
+                    const product = state.products.find(p => p.id === payload.productId);
+                    if (!product) return;
+                    if (product.stock === 0) {
+                        showMessage("Stock agotado para este producto.", "error");
+                        return;
+                    }
+                    if (!state.cart[payload.productId]) {
+                        state.cart[payload.productId] = 0;
+                    }
+                    if (state.cart[payload.productId] < product.stock) {
+                        state.cart[payload.productId] += 1;
+                        showMessage(`"${product.name}" añadido al carrito.`, "success");
+                    } else {
+                        showMessage(`No hay suficiente stock disponible para "${product.name}".`, "error");
+                    }
+                    break;
+                case 'UPDATE_CART':
+                    const p = state.products.find(p => p.id === payload.productId);
+                    if (payload.quantity <= 0) {
+                        delete state.cart[payload.productId];
+                    } else if (payload.quantity <= p.stock) {
+                        state.cart[payload.productId] = payload.quantity;
+                    } else {
+                         showMessage(`Máximo stock para ${p.name} es ${p.stock}.`, "warning");
+                         state.cart[payload.productId] = p.stock;
+                    }
+                    break;
+                case 'CLEAR_CART':
+                    state.cart = {};
+                    break;
+                case 'SET_EDIT_PRODUCT':
+                    state.editProduct = payload ? { ...payload } : null;
+                    break;
+                case 'SAVE_PRODUCT':
+                    saveProduct(payload);
+                    break;
+                case 'DELETE_PRODUCT':
+                    deleteProduct(payload);
+                    break;
+                case 'ADD_VENDEDOR':
+                    addVendedor(payload);
+                    break;
+                case 'SET_CURRENT_VENDEDOR':
+                    state.currentVendedor = payload;
+                    state.cart = {}; // Limpiar carrito al cambiar de vendedor
+                    break;
+            }
+            saveState();
+            render();
+        }
+
+        function showMessage(text, type = 'info', duration = 3000) {
+            state.message = { text, type, visible: true };
+            render();
+            setTimeout(() => {
+                state.message = { text: '', type: '', visible: false };
+                render();
+            }, duration);
+        }
+
+        // --- LÓGICA DE ADMINISTRACIÓN DE PRODUCTOS ---
+
+        function saveProduct(productData) {
+            const isNew = !productData.id;
+            
+            if (isNew) {
+                // Nuevo producto
+                const newId = Math.max(...state.products.map(p => p.id), 0) + 1;
+                state.products.push({ ...productData, id: newId, stock: parseInt(productData.stock) });
+                showMessage(`Producto "${productData.name}" creado con éxito.`, "success");
+            } else {
+                // Editar producto
+                const index = state.products.findIndex(p => p.id === productData.id);
+                if (index !== -1) {
+                    state.products[index] = { ...productData, stock: parseInt(productData.stock) };
+                    showMessage(`Producto "${productData.name}" actualizado.`, "success");
+                }
+            }
+            state.editProduct = null;
+        }
+
+        function deleteProduct(productId) {
+            state.products = state.products.filter(p => p.id !== productId);
+            // También se borra del carrito si existe
+            delete state.cart[productId];
+            showMessage("Producto eliminado correctamente.", "success");
+        }
+        
+        function addVendedor(name) {
+             if (name.trim() && !state.vendedores.includes(name.trim())) {
+                state.vendedores.push(name.trim());
+                showMessage(`Vendedor "${name.trim()}" añadido.`, "success");
+            } else {
+                 showMessage("Nombre de vendedor no válido o ya existe.", "error");
+            }
+        }
+
+        // --- WHATSAPP INTEGRATION & ORDER LOGIC (Incluyendo Crédito/Pago) ---
+
+        function sendOrderToWhatsApp() {
+            // Obtener el tipo de pago seleccionado
+            const paymentType = document.querySelector('input[name="paymentType"]:checked')?.value;
+
+            if (!paymentType) {
+                showMessage("Por favor, selecciona el tipo de pago (Total o Crédito).", "warning");
+                return;
+            }
+
+            const cartItems = Object.keys(state.cart).map(id => {
+                const product = state.products.find(p => p.id === parseInt(id));
+                const quantity = state.cart[id];
+                return { product, quantity, subtotal: product.price * quantity };
+            }).filter(item => item.product);
+
+            if (cartItems.length === 0) {
+                showMessage("El carrito está vacío. Agregue productos antes de enviar el pedido.", "warning");
+                return;
+            }
+
+            const total = cartItems.reduce((sum, item) => sum + item.subtotal, 0);
+
+            // 1. Logging the order to history
+            const order = {
+                id: Date.now(),
+                vendedor: state.currentVendedor,
+                date: new Date().toLocaleString('es-ES'),
+                items: cartItems.map(item => ({
+                    id: item.product.id,
+                    name: item.product.name,
+                    quantity: item.quantity,
+                    price: item.product.price, // Precio unitario en Gs.
+                })),
+                total: total,
+                paymentType: paymentType,
+            };
+            state.orderHistory.unshift(order); // Añadir al inicio del historial
+
+            // 2. Prepare WhatsApp message
+            let messageText = `*Nuevo Pedido (${paymentType}) de Vendedor: ${state.currentVendedor}*\n`;
+            messageText += `*Condición de Pago:* ${paymentType}\n\n`;
+            messageText += "*Detalle del Pedido:*\n";
+            cartItems.forEach(item => {
+                messageText += `- ${item.quantity} x ${item.product.name} (P.U.: ${formatGuarani(item.product.price)}) = ${formatGuarani(item.subtotal)}\n`;
+            });
+            messageText += `\n*TOTAL: ${formatGuarani(total)}*\n\n`;
+            messageText += "Por favor, confirmar disponibilidad y tiempo de entrega. ¡Gracias!";
+
+            const whatsappUrl = `https://wa.me/${WHATSAPP_BUSINESS_NUMBER}?text=${encodeURIComponent(messageText)}`;
+
+            // 3. Aplicar el descuento de stock (simulación de venta)
+            cartItems.forEach(item => {
+                const product = state.products.find(p => p.id === item.product.id);
+                if (product) {
+                    product.stock -= item.quantity;
+                }
+            });
+
+            // 4. Limpiar el carrito y guardar estado
+            dispatch('CLEAR_CART'); 
+            
+            // 5. Redireccionar
+            window.open(whatsappUrl, '_blank');
+            showMessage("Pedido enviado, stock y historial actualizados. Redireccionando a WhatsApp...", "success", 5000);
+        }
+
+        // --- LÓGICA DE EXPORTACIÓN CSV ---
+
+        function exportOrderHistoryToCSV() {
+            if (state.orderHistory.length === 0) {
+                showMessage("No hay pedidos en el historial para exportar.", "warning");
+                return;
+            }
+
+            let csvContent = "Vendedor,Fecha,Tipo de Pago,ID Producto,Nombre Producto,Cantidad,Precio Unitario (Gs.),Subtotal (Gs.)\n";
+
+            state.orderHistory.forEach(order => {
+                order.items.forEach(item => {
+                    const subtotal = item.quantity * item.price;
+                    // Escapar nombres para evitar problemas con comas internas en el CSV
+                    const name = item.name.replace(/"/g, '""');
+                    
+                    csvContent += [
+                        `"${order.vendedor}"`,
+                        `"${order.date}"`,
+                        `"${order.paymentType}"`,
+                        item.id,
+                        `"${name}"`,
+                        item.quantity,
+                        item.price, 
+                        subtotal 
+                    ].join(',') + '\n';
+                });
+            });
+
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            
+            if (link.download !== undefined) { 
+                const url = URL.createObjectURL(blob);
+                link.setAttribute("href", url);
+                link.setAttribute("download", `historial_pedidos_${new Date().toISOString().slice(0, 10)}.csv`);
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                showMessage("Historial de pedidos exportado con éxito.", "success");
+            } else {
+                showMessage("Tu navegador no soporta la descarga automática. Copia el contenido manualmente.", "error");
+            }
+        }
+
+
+        // --- COMPONENTES DE VISTA (RENDERIZACIÓN) ---
+
+        function getMessageHtml() {
+            if (!state.message.visible) return '';
+            const bgClass = state.message.type === 'success' ? 'bg-green-100 border-green-400 text-green-700' :
+                            state.message.type === 'warning' ? 'bg-yellow-100 border-yellow-400 text-yellow-700' :
+                            'bg-red-100 border-red-400 text-red-700';
+            
+            // Usamos un div temporal para evitar problemas con la renderización
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = `
+                <div id="message-container" class="fixed top-4 right-4 z-50 p-4 border rounded-lg shadow-lg ${bgClass} transition-opacity duration-300">
+                    <p class="font-medium">${state.message.text}</p>
+                </div>
+            `;
+            return tempDiv.innerHTML;
+        }
+
+        function getHeaderHtml() {
+            const roleText = state.userRole === 'admin' ? 'Panel Administrador' : `Pedidos de ${state.currentVendedor}`;
+            const switchBtnText = state.userRole === 'admin' ? 'Ir a Pedidos (Vendedor)' : 'Ir a Admin Panel';
+            const switchRole = state.userRole === 'admin' ? 'vendedor' : 'admin';
+
+            return `
+                <header class="bg-white shadow-md p-4 flex justify-between items-center rounded-t-xl">
+                    <h1 class="text-2xl font-bold text-gray-800">${roleText}</h1>
+                    <div class="flex items-center space-x-4">
+                        <button onclick="dispatch('SET_ROLE', '${switchRole}')"
+                            class="px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition duration-150 shadow-md">
+                            ${switchBtnText}
+                        </button>
+                    </div>
+                </header>
+            `;
+        }
+
+        // --- VISTA VENDEDOR (PRODUCTOS Y CARRITO) ---
+
+        function getVendedorViewHtml() {
+            const cartItems = Object.keys(state.cart).map(id => {
+                const product = state.products.find(p => p.id === parseInt(id));
+                const quantity = state.cart[id];
+                return { product, quantity, subtotal: product.price * quantity };
+            }).filter(item => item.product); // Filtrar si el producto fue borrado
+
+            const total = cartItems.reduce((sum, item) => sum + item.subtotal, 0);
+
+            return `
+                <div class="grid md:grid-cols-3 gap-6 p-4">
+                    <!-- Columna 1 & 2: Listado de Productos -->
+                    <div class="md:col-span-2">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-semibold text-gray-700">Productos Disponibles (${state.products.length})</h2>
+                            <select onchange="dispatch('SET_CURRENT_VENDEDOR', this.value)"
+                                class="p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500">
+                                ${state.vendedores.map(v => 
+                                    `<option value="${v}" ${v === state.currentVendedor ? 'selected' : ''}>Vendedor: ${v}</option>`
+                                ).join('')}
+                            </select>
+                        </div>
+                        <div class="space-y-4">
+                            ${state.products.map(p => getProductCardHtml(p)).join('')}
+                            ${state.products.length === 0 ? '<p class="text-gray-500">No hay productos cargados en el sistema.</p>' : ''}
+                        </div>
+                    </div>
+
+                    <!-- Columna 3: Carrito de Compras -->
+                    <div class="md:col-span-1 bg-white p-4 card sticky top-4 self-start">
+                        <h2 class="text-xl font-semibold text-gray-700 mb-4 border-b pb-2">Carrito de Compras</h2>
+                        
+                        <div class="space-y-3 max-h-96 overflow-y-auto pr-2">
+                            ${cartItems.map(item => getCartItemHtml(item)).join('')}
+                            ${cartItems.length === 0 ? '<p class="text-gray-500 italic">El carrito está vacío.</p>' : ''}
+                        </div>
+
+                        <div class="mt-4 pt-4 border-t">
+                             <!-- Opción de Pago Total o Crédito -->
+                            <h3 class="font-semibold text-gray-700 mb-2">Condición de Pago:</h3>
+                            <div class="flex space-x-4 mb-4">
+                                <label class="inline-flex items-center">
+                                    <input type="radio" name="paymentType" value="Pago Total" checked 
+                                        class="form-radio text-green-600 h-4 w-4 transition duration-150 ease-in-out">
+                                    <span class="ml-2 text-sm text-gray-700">Pago Total</span>
+                                </label>
+                                <label class="inline-flex items-center">
+                                    <input type="radio" name="paymentType" value="Crédito (Parcial)"
+                                        class="form-radio text-red-600 h-4 w-4 transition duration-150 ease-in-out">
+                                    <span class="ml-2 text-sm text-gray-700">Crédito (Parcial)</span>
+                                </label>
+                            </div>
+
+                            <div class="flex justify-between font-bold text-lg mb-4 text-gray-800">
+                                <span>TOTAL:</span>
+                                <span>${formatGuarani(total)}</span>
+                            </div>
+
+                            <button onclick="sendOrderToWhatsApp()" ${cartItems.length === 0 ? 'disabled' : ''}
+                                class="w-full py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 transition duration-150 shadow-md disabled:bg-gray-400 disabled:cursor-not-allowed">
+                                Enviar Pedido por WhatsApp Business
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function getProductCardHtml(product) {
+            const quantityInCart = state.cart[product.id] || 0;
+            const isOutOfStock = product.stock <= 0;
+            
+            return `
+                <div class="flex bg-white card p-4 items-center">
+                    <img src="${product.image}" onerror="this.onerror=null;this.src='https://placehold.co/100x100/374151/ffffff?text=Producto'" 
+                         alt="${product.name}" class="w-20 h-20 object-cover rounded-md mr-4 flex-shrink-0">
+                    
+                    <div class="flex-grow">
+                        <h3 class="font-bold text-lg text-gray-800">${product.name}</h3>
+                        <p class="text-sm text-gray-600 truncate">${product.description}</p>
+                        <p class="text-sm font-semibold mt-1">
+                            Precio: <span class="text-indigo-600">${formatGuarani(product.price)}</span> | 
+                            Stock: <span class="${product.stock < 10 ? 'text-red-500 font-bold' : 'text-green-600'}">${product.stock}</span>
+                        </p>
+                    </div>
+
+                    <div class="ml-4 flex-shrink-0 text-right">
+                        ${quantityInCart > 0 ? `<p class="text-sm font-medium text-indigo-500 mb-1">En carrito: ${quantityInCart}</p>` : ''}
+                        <button onclick="dispatch('ADD_TO_CART', { productId: ${product.id} })"
+                            ${isOutOfStock ? 'disabled' : ''}
+                            class="px-4 py-2 bg-indigo-500 text-white text-sm font-semibold rounded-lg hover:bg-indigo-600 transition duration-150 shadow-md disabled:bg-gray-400 disabled:cursor-not-allowed">
+                            ${isOutOfStock ? 'Sin Stock' : 'Añadir al Carrito'}
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function getCartItemHtml(item) {
+            return `
+                <div class="flex items-center justify-between p-2 border-b last:border-b-0">
+                    <div class="flex-grow">
+                        <p class="text-sm font-medium text-gray-700">${item.product.name}</p>
+                        <p class="text-xs text-gray-500">${formatGuarani(item.subtotal)}</p>
+                    </div>
+                    <div class="flex items-center space-x-1">
+                        <button onclick="dispatch('UPDATE_CART', { productId: ${item.product.id}, quantity: ${item.quantity - 1} })"
+                            class="w-6 h-6 bg-red-100 text-red-600 rounded-full hover:bg-red-200">-</button>
+                        <input type="number" min="0" value="${item.quantity}" onchange="dispatch('UPDATE_CART', { productId: ${item.product.id}, quantity: parseInt(this.value) || 0 })"
+                            class="w-12 text-center text-sm border border-gray-300 rounded-md p-1 focus:ring-indigo-500 focus:border-indigo-500"/>
+                        <button onclick="dispatch('UPDATE_CART', { productId: ${item.product.id}, quantity: ${item.quantity + 1} })"
+                            class="w-6 h-6 bg-green-100 text-green-600 rounded-full hover:bg-green-200">+</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- VISTA ADMINISTRADOR (PRODUCTOS, STOCK, VENDEDORES, CSV) ---
+        
+        function getAdminViewHtml() {
+            return `
+                <div class="grid md:grid-cols-3 gap-6 p-4">
+                    <!-- Columna 1: Crear/Editar Producto -->
+                    <div class="md:col-span-1 bg-white p-4 card sticky top-4 self-start">
+                        ${getEditProductFormHtml()}
+                        <div class="mt-8 border-t pt-4">
+                            <h3 class="text-lg font-semibold text-gray-700 mb-3">Administrar Vendedores</h3>
+                            ${getVendedorManagementHtml()}
+                        </div>
+                    </div>
+
+                    <!-- Columna 2 & 3: Listado de Productos para Admin -->
+                    <div class="md:col-span-2">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-semibold text-gray-700">Gestión de Productos (${state.products.length})</h2>
+                            <div class="space-x-2">
+                                <button onclick="dispatch('SET_EDIT_PRODUCT', {})" 
+                                    class="px-4 py-2 bg-indigo-500 text-white font-semibold rounded-lg hover:bg-indigo-600 transition duration-150 shadow-md">
+                                    + Cargar Nuevo Producto
+                                </button>
+                                <button onclick="exportOrderHistoryToCSV()" 
+                                    class="px-4 py-2 bg-purple-600 text-white font-semibold rounded-lg hover:bg-purple-700 transition duration-150 shadow-md disabled:bg-gray-400"
+                                    ${state.orderHistory.length === 0 ? 'disabled' : ''}>
+                                    Exportar ${state.orderHistory.length} Pedidos (CSV)
+                                </button>
+                            </div>
+                        </div>
+                        <div class="space-y-3">
+                            ${state.products.map(p => getAdminProductRowHtml(p)).join('')}
+                            ${state.products.length === 0 ? '<p class="text-gray-500">No hay productos cargados.</p>' : ''}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function getVendedorManagementHtml() {
+            return `
+                <div class="space-y-2 mb-4 max-h-40 overflow-y-auto">
+                    ${state.vendedores.map(v => `<span class="inline-block bg-gray-200 rounded-full px-3 py-1 text-sm font-semibold text-gray-700">${v}</span>`).join(' ')}
+                </div>
+                <form onsubmit="event.preventDefault(); handleAddVendedor(this)">
+                    <input type="text" name="vendedorName" placeholder="Nombre del nuevo vendedor" required
+                        class="w-full p-2 border border-gray-300 rounded-lg shadow-sm focus:ring-green-500 focus:border-green-500 mb-2">
+                    <button type="submit" class="w-full py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition duration-150">
+                        Crear Vendedor
+                    </button>
+                </form>
+            `;
+        }
+        
+        function handleAddVendedor(form) {
+            const name = form.vendedorName.value;
+            dispatch('ADD_VENDEDOR', name);
+            form.reset();
+        }
+
+        function getEditProductFormHtml() {
+            const product = state.editProduct || { name: '', price: '', stock: '', description: '', image: '', id: null };
+            const isEditing = product.id !== null;
+
+            return `
+                <h2 class="text-xl font-semibold text-gray-700 mb-4">${isEditing ? 'Editar Producto' : 'Cargar Nuevo Producto'}</h2>
+                <form id="productForm" onsubmit="event.preventDefault(); handleSaveProduct()">
+                    <input type="hidden" name="id" value="${product.id || ''}">
+                    
+                    <div class="mb-3">
+                        <label class="block text-sm font-medium text-gray-700">Nombre</label>
+                        <input type="text" name="name" value="${product.name}" required
+                            class="mt-1 block w-full p-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="block text-sm font-medium text-gray-700">Descripción</label>
+                        <textarea name="description" required
+                            class="mt-1 block w-full p-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500">${product.description}</textarea>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-3 mb-3">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Precio (Gs.)</label>
+                            <input type="number" step="1" min="0" name="price" value="${product.price}" required
+                                class="mt-1 block w-full p-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Stock Inicial/Actual</label>
+                            <input type="number" min="0" name="stock" value="${product.stock}" required
+                                class="mt-1 block w-full p-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500">
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700">URL Imagen (Opcional)</label>
+                        <input type="text" name="image" value="${product.image}" placeholder="https://..."
+                            class="mt-1 block w-full p-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500">
+                    </div>
+
+                    <div class="flex justify-between space-x-2">
+                        <button type="submit"
+                            class="flex-grow py-2 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 transition duration-150 shadow-md">
+                            ${isEditing ? 'Guardar Cambios' : 'Crear Producto'}
+                        </button>
+                        <button type="button" onclick="dispatch('SET_EDIT_PRODUCT', null)"
+                            class="px-4 py-2 bg-gray-300 text-gray-800 font-semibold rounded-lg hover:bg-gray-400 transition duration-150">
+                            Cancelar
+                        </button>
+                    </div>
+                </form>
+            `;
+        }
+
+        function handleSaveProduct() {
+            const form = document.getElementById('productForm');
+            const formData = new FormData(form);
+            const productData = {
+                id: formData.get('id') ? parseInt(formData.get('id')) : null,
+                name: formData.get('name'),
+                description: formData.get('description'),
+                price: parseFloat(formData.get('price')), // Se mantiene parseFloat aunque PYG no tenga decimales, por flexibilidad
+                stock: parseInt(formData.get('stock')),
+                image: formData.get('image'),
+            };
+            dispatch('SAVE_PRODUCT', productData);
+        }
+
+        function getAdminProductRowHtml(product) {
+            return `
+                <div class="flex bg-white p-3 card items-center justify-between">
+                    <div class="flex-grow">
+                        <p class="font-bold text-gray-800">${product.name}</p>
+                        <p class="text-sm text-gray-600">Precio: ${formatGuarani(product.price)} | Stock: <span class="${product.stock < 10 ? 'text-red-500 font-bold' : 'text-green-600'}">${product.stock}</span></p>
+                    </div>
+                    <div class="flex space-x-2 flex-shrink-0 ml-4">
+                        <button onclick="dispatch('SET_EDIT_PRODUCT', state.products.find(p => p.id === ${product.id}))"
+                            class="px-3 py-1 bg-yellow-500 text-white text-xs font-semibold rounded-lg hover:bg-yellow-600 transition duration-150">
+                            Editar
+                        </button>
+                        <button onclick="handleDeleteConfirmation(${product.id}, '${product.name}')"
+                            class="px-3 py-1 bg-red-600 text-white text-xs font-semibold rounded-lg hover:bg-red-700 transition duration-150">
+                            Eliminar
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+        
+        // Simulación de Modal de Confirmación
+        function handleDeleteConfirmation(id, name) {
+            // Reemplazamos alert/confirm con un mensaje box
+            const confirmed = window.confirm(`¿Estás seguro de que deseas eliminar el producto "${name}"? Esta acción no se puede deshacer.`);
+            if (confirmed) {
+                dispatch('DELETE_PRODUCT', id);
+            }
+        }
+
+
+        // --- FUNCIÓN DE RENDERIZADO PRINCIPAL ---
+
+        function render() {
+            // Renderiza el mensaje temporal
+            const messageHtml = getMessageHtml();
+            if (document.getElementById('message-container')) {
+                document.getElementById('message-container').outerHTML = messageHtml; // Reemplaza para actualizar
+            } else if (messageHtml) {
+                 const tempDiv = document.createElement('div');
+                 tempDiv.innerHTML = messageHtml;
+                 document.body.appendChild(tempDiv.firstChild);
+            }
+
+
+            // Renderiza la vista principal
+            let contentHtml = '';
+            if (state.userRole === 'admin') {
+                contentHtml = getAdminViewHtml();
+            } else {
+                contentHtml = getVendedorViewHtml();
+            }
+
+            APP_CONTAINER.innerHTML = `
+                <div class="w-full max-w-7xl mx-auto space-y-4">
+                    ${getHeaderHtml()}
+                    <main class="bg-gray-50 rounded-b-xl pb-6">
+                        ${contentHtml}
+                    </main>
+                </div>
+            `;
+        }
+
+        // Inicializar la aplicación
+        window.onload = () => {
+             // Iniciar con la vista de vendedor por defecto si no hay rol guardado
+            if (!localStorage.getItem('userRole')) {
+                state.userRole = 'vendedor';
+            }
+            render();
+        };
+
+        // Escucha si el usuario modifica el carrito o los productos guardados en localStorage
+        window.addEventListener('storage', (event) => {
+            if (event.key === 'products' || event.key === 'cart' || event.key === 'orderHistory') {
+                state.products = JSON.parse(localStorage.getItem('products')) || state.products;
+                state.cart = JSON.parse(localStorage.getItem('cart')) || state.cart;
+                state.orderHistory = JSON.parse(localStorage.getItem('orderHistory')) || state.orderHistory;
+                render();
+            }
+        });
+        
+    </script>
+
+</body>
+</html>
